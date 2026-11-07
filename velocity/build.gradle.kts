@@ -30,6 +30,16 @@ dependencies {
     // Reflection
     compileOnly(files("${rootProject.rootDir}/libs/jni-internal-lookup-1.9.jar"))
     compileOnly("net.momirealms:sparrow-reflection:${rootProject.properties["sparrow_reflection_version"]}")
+    // BTC : tests du choix hook officiel / reflexion (PacketPipelineInjectorTest)
+    testImplementation(btcVelocityApi)
+    netty(project, "testImplementation")
+    testImplementation("org.junit.jupiter:junit-jupiter:6.1.3")
+    testImplementation("org.mockito:mockito-core:5.24.0")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher:6.1.3")
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
 
 sourceSets {

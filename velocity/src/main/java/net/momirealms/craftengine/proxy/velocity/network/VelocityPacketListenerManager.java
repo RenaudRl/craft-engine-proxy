@@ -14,8 +14,6 @@ import net.momirealms.craftengine.proxy.common.network.protocol.packettype.Packe
 import net.momirealms.craftengine.proxy.velocity.VelocityCraftEngine;
 import net.momirealms.craftengine.proxy.velocity.network.inject.PacketPipelineInjector;
 import net.momirealms.craftengine.proxy.velocity.platform.VelocityPlayer;
-import net.momirealms.craftengine.proxy.velocity.reflection.velocitypowered.proxy.connection.MinecraftConnectionProxy;
-import net.momirealms.craftengine.proxy.velocity.reflection.velocitypowered.proxy.connection.client.ConnectedPlayerProxy;
 import net.momirealms.craftengine.proxy.velocity.util.VelocityAdventureHelper;
 import org.jetbrains.annotations.Nullable;
 
@@ -117,9 +115,8 @@ public final class VelocityPacketListenerManager extends PacketListenerManager {
     // 通过玩家底层的 MinecraftConnection 找到对应的 ChannelConnection
     @Nullable
     private ChannelConnection connectionByPlayer(Player player) {
-        Object connection = ConnectedPlayerProxy.INSTANCE.getConnection(player);
-        Channel channel = MinecraftConnectionProxy.INSTANCE.getChannel(connection);
-        return this.connectionsByChannel.get(channel);
+        Channel channel = this.pipelineInjector.channelOf(player);
+        return channel == null ? null : this.connectionsByChannel.get(channel);
     }
 
     @Override
