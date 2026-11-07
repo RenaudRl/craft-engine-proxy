@@ -142,10 +142,16 @@ public final class PacketPipelineInjector {
         }
         // 连接状态从 channel 创建时开始记录, 后续再绑定到 ProxyPlayer
         ChannelConnection connection = new ChannelConnection(channel, VelocityCraftEngine.instance().packetListenerManager());
-        // 先挂关闭监听再注册: addTo 失败时 (代理会移除已加的 handler) 连接关闭仍会清理注册
-        channel.closeFuture().addListener((ChannelFutureListener) future -> this.connectionUnregister.accept(connection));
+        // 先注册再挂关闭监听: 之前的 hook 已关闭 channel 时, 监听立即执行, 先挂会在注册前清理而使条目泄漏
         this.connectionRegisterer.accept(connection);
-        addTo(channel, this.packetSink, connection);
+        channel.closeFuture().addListener((ChannelFutureListener) future -> this.connectionUnregister.accept(connection));
+        try {
+            addTo(channel, this.packetSink, connection);
+        } catch (Throwable e) {
+            // 代理会移除已加的 handler 并保留连接: 此处立即清理 (关闭监听之后再执行一次, unregister 幂等)
+            this.connectionUnregister.accept(connection);
+            throw e;
+        }
     }
 
     // 玩家登录后找到其 Netty channel: 官方 API, 或在旧版 Velocity 上通过反射

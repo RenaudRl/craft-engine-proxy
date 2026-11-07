@@ -4,6 +4,7 @@ import com.btcvelocity.api.connection.ClientChannelHook;
 import com.btcvelocity.api.connection.CompressionState;
 import com.velocitypowered.api.plugin.PluginContainer;
 import com.velocitypowered.api.proxy.ProxyServer;
+import io.netty.channel.Channel;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.embedded.EmbeddedChannel;
 import net.momirealms.craftengine.proxy.common.network.ChannelConnection;
@@ -15,6 +16,8 @@ import org.slf4j.Logger;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -99,21 +102,46 @@ class PacketPipelineInjectorTest {
     }
 
     @Test
-    void aConnectionIsUnregisteredOnCloseEvenWhenAddingTheHandlersFails() {
-        List<ChannelConnection> registered = new ArrayList<>();
-        List<ChannelConnection> unregistered = new ArrayList<>();
-        PacketPipelineInjector injector = injector(true, registered, unregistered);
+    void aConnectionIsUnregisteredAndTheErrorRethrownWhenAddingTheHandlersFails() {
+        Map<Channel, ChannelConnection> connections = new ConcurrentHashMap<>();
+        PacketPipelineInjector injector = injector(true, connections);
         injector.inject();
         EmbeddedChannel channel = new EmbeddedChannel();
         channel.pipeline().addLast("minecraft-decoder", new ChannelInboundHandlerAdapter());
 
         // the decoder reads the proxy configuration, which this mocked server does not have
         assertThrows(NullPointerException.class, () -> injector.attach(channel));
+
+        assertTrue(connections.isEmpty(), "cleaned at once, without waiting for the close");
+        channel.close();
+        assertTrue(connections.isEmpty());
+    }
+
+    @Test
+    void aChannelAlreadyClosedByAPreviousHookLeavesNoEntry() {
+        Map<Channel, ChannelConnection> connections = new ConcurrentHashMap<>();
+        PacketPipelineInjector injector = injector(true, connections);
+        injector.inject();
+        EmbeddedChannel channel = new EmbeddedChannel();
         channel.close();
 
-        assertEquals(1, registered.size());
-        assertEquals(registered, unregistered);
-        assertSame(channel, registered.get(0).channel());
+        injector.attach(channel);
+
+        assertTrue(connections.isEmpty(), "the close listener must run after the registration");
+    }
+
+    @Test
+    void anOpenChannelIsRegisteredThenUnregisteredOnClose() {
+        Map<Channel, ChannelConnection> connections = new ConcurrentHashMap<>();
+        PacketPipelineInjector injector = injector(true, connections);
+        injector.inject();
+        EmbeddedChannel channel = new EmbeddedChannel();
+
+        injector.attach(channel);
+
+        assertSame(channel, connections.get(channel).channel());
+        channel.close();
+        assertTrue(connections.isEmpty());
     }
 
     @Test
@@ -127,5 +155,12 @@ class PacketPipelineInjectorTest {
                                             List<ChannelConnection> unregistered) {
         return new PacketPipelineInjector(this.plugin, (connection, player, side, buffer) -> buffer,
                 registered::add, unregistered::add, officialHook);
+    }
+
+    /** Registers into a map keyed by channel, like the packet listener manager does. */
+    private PacketPipelineInjector injector(boolean officialHook, Map<Channel, ChannelConnection> connections) {
+        return new PacketPipelineInjector(this.plugin, (connection, player, side, buffer) -> buffer,
+                connection -> connections.put(connection.channel(), connection),
+                connection -> connections.remove(connection.channel()), officialHook);
     }
 }
