@@ -1,12 +1,17 @@
 package net.momirealms.craftengine.proxy.velocity.network.inject;
 
 import io.netty.channel.Channel;
+import com.velocitypowered.api.proxy.Player;
+import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelPipeline;
 import net.momirealms.craftengine.proxy.common.network.ChannelConnection;
 import net.momirealms.craftengine.proxy.common.network.packet.PacketSink;
 import net.momirealms.craftengine.proxy.common.util.ReflectionUtils;
 import net.momirealms.craftengine.proxy.velocity.VelocityCraftEngine;
+import net.momirealms.craftengine.proxy.velocity.reflection.velocitypowered.proxy.connection.MinecraftConnectionProxy;
+import net.momirealms.craftengine.proxy.velocity.reflection.velocitypowered.proxy.connection.client.ConnectedPlayerProxy;
+import org.jetbrains.annotations.Nullable;
 
 import java.lang.reflect.Field;
 import java.util.Objects;
@@ -25,7 +30,9 @@ public final class PacketPipelineInjector {
     private final PacketSink packetSink; // raw ByteBuf 捕获回调
     private final Consumer<ChannelConnection> connectionRegisterer; // 新 Channel 注册回调
     private final Consumer<ChannelConnection> connectionUnregister; // Channel 关闭清理回调
+    private final boolean officialHook = BtcPipelineApi.available(); // BTCVelocity 提供官方 pipeline hook 时不再使用反射
     private volatile boolean injected; // initializer 是否处于注入状态
+    private volatile Object registeredHook; // 已注册的官方 hook, 仅 officialHook 为 true 时有值
 
     public PacketPipelineInjector(
             VelocityCraftEngine plugin,
@@ -42,6 +49,14 @@ public final class PacketPipelineInjector {
     // 注入服务端 channel initializer
     @SuppressWarnings("unchecked")
     public void inject() {
+        if (this.officialHook) {
+            // BTCVelocity: 官方 hook 在 Velocity 自己的 pipeline 构建完成后回调, 与下面的包装方式位置一致
+            if (this.registeredHook == null) {
+                this.registeredHook = BtcPipelineApi.register(this.plugin.server, this::attach);
+            }
+            this.injected = true;
+            return;
+        }
         try {
             Object holder = this.serverInitializerHolder();
             Supplier<io.netty.channel.ChannelInitializer<Channel>> supplier = (Supplier<io.netty.channel.ChannelInitializer<Channel>>) holder;
@@ -57,13 +72,7 @@ public final class PacketPipelineInjector {
             }
             // 注入
             Field initializerField = ReflectionUtils.getDeclaredField(holder.getClass(), io.netty.channel.ChannelInitializer.class, 0);
-            Objects.requireNonNull(initializerField).set(holder, new ChannelInitializer(
-                    this,
-                    current,
-                    this.packetSink,
-                    this.connectionRegisterer,
-                    this.connectionUnregister
-            ));
+            Objects.requireNonNull(initializerField).set(holder, new ChannelInitializer(this, current));
             this.injected = true;
         } catch (ReflectiveOperationException | ClassCastException | NullPointerException e) {
             this.plugin.logger.warn("Failed to inject CraftEngine Velocity packet capture service", e);
@@ -74,6 +83,14 @@ public final class PacketPipelineInjector {
     @SuppressWarnings("unchecked")
     public void uninject() {
         this.injected = false;
+        if (this.officialHook) {
+            Object hook = this.registeredHook;
+            this.registeredHook = null;
+            if (hook != null) {
+                BtcPipelineApi.unregister(this.plugin.server, hook);
+            }
+            return;
+        }
         try {
             Object holder = this.serverInitializerHolder();
             Supplier<io.netty.channel.ChannelInitializer<Channel>> supplier = (Supplier<io.netty.channel.ChannelInitializer<Channel>>) holder;
@@ -91,6 +108,28 @@ public final class PacketPipelineInjector {
 
     boolean injected() {
         return this.injected;
+    }
+
+    // 新 Channel 的 Velocity pipeline 构建完成后, 绑定连接状态并添加数据包 handler
+    void attach(Channel channel) {
+        if (!this.injected) {
+            return;
+        }
+        // 连接状态从 channel 创建时开始记录, 后续再绑定到 ProxyPlayer
+        ChannelConnection connection = new ChannelConnection(channel, VelocityCraftEngine.instance().packetListenerManager());
+        this.connectionRegisterer.accept(connection);
+        addTo(channel, this.packetSink, connection);
+        channel.closeFuture().addListener((ChannelFutureListener) future -> this.connectionUnregister.accept(connection));
+    }
+
+    // 玩家登录后找到其 Netty channel: 官方 API, 或在旧版 Velocity 上通过反射
+    @Nullable
+    public Channel channelOf(Player player) {
+        if (this.officialHook) {
+            return BtcPipelineApi.channelOf(player);
+        }
+        Object connection = ConnectedPlayerProxy.INSTANCE.getConnection(player);
+        return MinecraftConnectionProxy.INSTANCE.getChannel(connection);
     }
 
     // 获取 ServerChannelInitializerHolder
